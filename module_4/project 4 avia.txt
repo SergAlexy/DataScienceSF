@@ -1,0 +1,204 @@
+Задача:  От каких самых малоприбыльных рейсов из Анапы мы можем отказаться в зимнее время.
+
+1. Проверяем куда летают рейсы из Анапы зимой
+SELECT 
+arrival_airport,
+count(f.flight_id) flights_ammount,
+ap1.city out_city,
+ap.city in_city
+FROM dst_project.flights f
+   join dst_project.airports ap on f.arrival_airport = ap.airport_code
+   join dst_project.airports ap1 on f.departure_airport = ap1.airport_code
+WHERE departure_airport = 'AAQ' 
+  AND (date_trunc('month', scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+  AND status not in ('Cancelled')
+  group by arrival_airport, ap.city, ap1.city
+
+Результат: 
+ 
+ три аэропорта: Москва (SVO), Белгород (EGO), Новокузнецк (NOZ)
+
+2. Проверяем какие самолеты летают по этим направлениям и их количество мест
+
+SELECT f.arrival_airport,
+       f.aircraft_code,
+      count(distinct s.seat_no) AS capacity
+FROM dst_project.flights f
+   join dst_project.seats s on f.aircraft_code = s.aircraft_code
+   WHERE f.departure_airport = 'AAQ'
+   AND (date_trunc('month', scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+   AND f.status not in ('Cancelled')
+group by 1, 2
+
+Результат:
+ 
+arrival_airport aircraft_code capacity
+EGO SU9 97
+NOZ 733 130
+SVO 733 130
+
+ 
+3. Проверяем количество купленных билетов на рейсы по направлениям
+SELECT 
+f.arrival_airport,
+count(tf.ticket_no)
+
+FROM dst_project.flights f
+    join dst_project.ticket_flights tf on f.flight_id = tf.flight_id
+
+WHERE departure_airport = 'AAQ' --and arrival_airport = 'EGO'
+  AND (date_trunc('month', scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+  AND status not in ('Cancelled')
+  group by f.arrival_airport
+
+Результат: 
+
+ arrival_airport Количество
+EGO 5,321
+SVO 6,674
+
+
+На Новокузнецк (NOZ) билетов продано не было, проверяем это отдельно для рейсов на этой направление сделав полное объединение таблицы flights и таблицы .ticket_flights
+
+
+SELECT 
+*
+FROM dst_project.flights f
+   full outer join dst_project.ticket_flights tf on f.flight_id = tf.flight_id
+WHERE departure_airport = 'AAQ' and arrival_airport = 'NOZ'
+  AND (date_trunc('month', scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+  AND status not in ('Cancelled')
+
+Результат: номер билетов нет, те билеты на рейсы не были проданы
+Таким образом все рейсы на этой направление можно добавить в список рекомендованных к исключению
+
+Далее среди оставшихся рейсов проверим  среднее количество билетов и выручки рейса.
+Выведем сумму выручки за рейс и среднюю цену билета за рейс по направлениям: 
+
+SELECT
+f.flight_id,
+f.arrival_airport,
+
+sum(tf.amount) Flight_revenue,
+avg(tf.amount) avg_ticket_cost
+
+FROM dst_project.flights f
+   join dst_project.airports ap on f.arrival_airport = ap.airport_code
+   join dst_project.airports ap1 on f.departure_airport = ap1.airport_code
+   full outer join dst_project.ticket_flights tf on f.flight_id = tf.flight_id
+  WHERE departure_airport = 'AAQ' and arrival_airport = 'SVO' 
+  AND (date_trunc('month', scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+  AND status not in ('Cancelled')
+  group by f.flight_id, f.arrival_airport
+  order by 3
+ 
+
+
+ 
+
+Добавим данные о расстоянии между аэропортами
+ Airports Distance.
+AAQ - EGO: 630 km
+AAQ - SVO: 1220 km
+
+Вычисляем значения контрольных параметров для рейсов (среднее количество пассажиров на рейсе, средняя заполняемость рейса пассажирами, средняя выручка с рейса без учета стоимости топлива, средняя стоимость за км без учета стоимости топлива):
+
+SELECT 'EGO' as arrival_airport,
+    count(t.ticket_no) / count(DISTINCT f.flight_id) as avg_passenger, -- среднее количество пассажиров на рейсе
+    count(t.ticket_no) / 97.0 * 100 / count(DISTINCT f.flight_id) as passenger_percent, -- среднее процент заполняемости самолета  на рейсе
+    sum(amount) / count(DISTINCT f.flight_id) as avg_ticket_profit, -- средняя выручка с рейса без учета стоимости топлива
+    sum(amount) /  count(DISTINCT f.flight_id) / 630 as  avg_km_profit  -- средняя стоимость за км без учета стоимости топлива
+FROM dst_project.flights f
+   join dst_project.ticket_flights t on f.flight_id = t.flight_id
+WHERE f.departure_airport = 'AAQ' AND f.arrival_airport = 'EGO'
+  AND (date_trunc('month', f.scheduled_departure) in ('2017-01-01', '2017-02-01', '2017-12-01'))
+  AND f.status not in ('Cancelled') 
+union all
+SELECT 'SVO' as arrival_airport,
+    count(t.ticket_no) / count(DISTINCT f.flight_id) as avg_passenger, -- среднее количество пассажиров на рейсе
+    count(t.ticket_no) / 130.0 * 100 / count(DISTINCT f.flight_id) as passenger_percent, -- среднее количество пассажиров на рейсе
+    sum(amount) / count(DISTINCT f.flight_id) as avg_ticket_profit, -- средняя прибыль с рейса без учета стоимости топлива
+     sum(amount) / count(DISTINCT f.flight_id) / 1220 as  avg_km_profit  -- средняя стоимость км средняя стоимость за км без учета стоимости топлива
+FROM dst_project.flights f
+    join dst_project.ticket_flights t on f.flight_id = t.flight_id
+WHERE f.departure_airport = 'AAQ' AND f.arrival_airport = 'SVO'
+  AND (date_trunc('month', f.scheduled_departure) in ('2017-01-01', '2017-02-01', '2017-12-01'))
+  AND f.status not in ('Cancelled')
+ 
+Для отбора малоприбыльных рейсов используем полученные данные для каждого направления (введем ограничения по рейсам, где выручка за рейс ниже средней, средняя заполняемость рейса ниже среднего и выручка за км пути так же ниже среднего), а так же все рейсы на Новокузнецк (NOZ)  :
+
+SELECT
+    f.flight_id,
+    f.departure_city,
+    f.arrival_city,
+    f.scheduled_departure,
+    a.model,
+    date_part('hour', f.scheduled_duration)*60 + date_part('minute', f.scheduled_duration) as duration_mm,
+    count(t.ticket_no) passengers,
+   sum(t.amount) profit_total_amount,
+    count(t.ticket_no)*4518 as " profit_per_km ",
+count(t.ticket_no) / 130.0 * 100 as " passenger_percent "
+FROM 
+ dst_project.flights_v f 
+ full outer join  dst_project.ticket_flights t on f.flight_id = t.flight_id
+ join dst_project.aircrafts a on f.aircraft_code = a.aircraft_code
+WHERE f.departure_airport = 'AAQ' AND f.arrival_airport = 'NOZ'
+    AND (date_trunc('month', f.scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+    AND f.status not in ('Cancelled')
+ group by 1,2,3,4,5,6
+union all
+SELECT
+    f.flight_id,
+    f.departure_city,
+    f.arrival_city,
+    f.scheduled_departure,
+    a.model,
+    date_part('hour', f.scheduled_duration)*60 + date_part('minute', f.scheduled_duration) as duration_mm,
+    count(t.ticket_no) passengers,
+    sum(t.amount) profit_total_amount,
+    sum(amount) /  630  as "profit_per_km",
+ count(t.ticket_no) / 97.0 * 100 as " passenger_percent "
+FROM 
+ dst_project.flights_v f 
+ join dst_project.ticket_flights t on f.flight_id = t.flight_id
+ join dst_project.aircrafts a on f.aircraft_code = a.aircraft_code
+WHERE f.departure_airport = 'AAQ' AND f.arrival_airport = 'EGO'
+    AND (date_trunc('month', f.scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+    AND f.status not in ('Cancelled')
+    AND f.flight_id = t.flight_id AND f.aircraft_code = a.aircraft_code
+group by 1,2,3,4,5,6
+having     
+    sum(t.amount) < 710435.59
+    AND     sum(amount) /  630  <  1127.68
+    AND count(t.ticket_no) / 97.0 * 100 < 92.98
+union all
+SELECT
+    f.flight_id,
+    f.departure_city,
+    f.arrival_city,
+    f.scheduled_departure,
+    a.model,
+    date_part('hour', f.scheduled_duration)*60 + date_part('minute', f.scheduled_duration) as duration_mm,
+    count(t.ticket_no) passengers,
+    sum(t.amount) profit_total_amount,
+    sum(amount) /  1220  as "profit",
+ count(t.ticket_no) / 130.0 * 100 as " passenger_percent "
+FROM 
+ dst_project.flights_v f 
+ join dst_project.ticket_flights t on f.flight_id = t.flight_id
+ join dst_project.aircrafts a on f.aircraft_code = a.aircraft_code
+WHERE f.departure_airport = 'AAQ' AND f.arrival_airport = 'SVO'
+    AND (date_trunc('month', f.scheduled_departure) in ('2017-01-01','2017-02-01', '2017-12-01'))
+    AND f.status not in ('Cancelled')
+    AND f.flight_id = t.flight_id AND f.aircraft_code = a.aircraft_code
+group by 1,2,3,4,5,6
+having     
+    sum(t.amount) < 1642576.27
+    AND     sum(amount) /  1220  <  1346.37
+    AND count(t.ticket_no) / 130.0 * 100 < 87.01
+
+На основе запроса сформирован итоговый датасет из 61 рейса (файл «avia low cost data set.xlsx»)
+
+Полный датасет со всеми рейсами и всеми данными по рейсам представлен в файле «avia full data set.xlsx» 
+
+При последующем анализе прибыльности рейсов нужно добавить данные по себестоимости рейса (включающее в себя стоимость топлива на момент выполнения полета, зарплаты экипажа, сборы аэропорта и сумму на тех обслуживание и амортизационную сумму на износ самолета) для уточненного расчет себестоимости рейса. Так же можно будет учесть продолжительность рейса, тк в некоторых случаях в зависимости от времени суток и погодных условий время рейса может увеличиваться, что так же влияет на итоговую себестоимость рейса.
